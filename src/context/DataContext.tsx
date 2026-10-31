@@ -115,11 +115,45 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const mainDocRef = doc(firestore, 'app_state', 'main');
-      const snap = await getDoc(mainDocRef);
+      const contractsColRef = collection(firestore, 'contracts');
+      const [snap, contractsSnap] = await Promise.all([
+        getDoc(mainDocRef),
+        getDocs(contractsColRef)
+      ]);
+
+      let remoteContracts: MarketLeaseContract[] = [];
+      if (!contractsSnap.empty) {
+        remoteContracts = contractsSnap.docs.map((d) => d.data() as MarketLeaseContract);
+        remoteContracts.sort((a, b) => {
+          if (a.marketType !== b.marketType) {
+            return a.marketType === 'night' ? -1 : 1;
+          }
+          return (a.order || 0) - (b.order || 0);
+        });
+      }
+
       if (snap.exists()) {
         const cloudData = { ...initialDatabase, ...snap.data() } as AppDatabase;
-        setDb(cloudData);
-        saveLocalData(cloudData);
+        const mergedData: AppDatabase = {
+          ...cloudData,
+          contracts: remoteContracts.length > 0 ? remoteContracts : (cloudData.contracts || initialDatabase.contracts)
+        };
+        setDb(mergedData);
+        saveLocalData(mergedData);
+        setIsFirebaseConnected(true);
+        setIsOnline(true);
+        setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
+        syncedFromCloud = true;
+      } else if (remoteContracts.length > 0) {
+        setDb((prevDb) => {
+          const mergedData: AppDatabase = {
+            ...prevDb,
+            contracts: remoteContracts,
+            lastUpdated: new Date().toISOString()
+          };
+          saveLocalData(mergedData);
+          return mergedData;
+        });
         setIsFirebaseConnected(true);
         setIsOnline(true);
         setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
@@ -237,27 +271,25 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           contractsColRef,
           (snapshot) => {
             if (!isMounted) return;
-            if (!snapshot.empty) {
-              const liveContracts = snapshot.docs.map((d) => d.data() as MarketLeaseContract);
-              liveContracts.sort((a, b) => {
-                if (a.marketType !== b.marketType) {
-                  return a.marketType === 'night' ? -1 : 1;
-                }
-                return (a.order || 0) - (b.order || 0);
-              });
-              setDb((prevDb) => {
-                const nextDb: AppDatabase = {
-                  ...prevDb,
-                  contracts: liveContracts,
-                  lastUpdated: new Date().toISOString()
-                };
-                saveLocalData(nextDb);
-                return nextDb;
-              });
-              setIsFirebaseConnected(true);
-              setIsOnline(true);
-              setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
-            }
+            const liveContracts = snapshot.docs.map((d) => d.data() as MarketLeaseContract);
+            liveContracts.sort((a, b) => {
+              if (a.marketType !== b.marketType) {
+                return a.marketType === 'night' ? -1 : 1;
+              }
+              return (a.order || 0) - (b.order || 0);
+            });
+            setDb((prevDb) => {
+              const nextDb: AppDatabase = {
+                ...prevDb,
+                contracts: liveContracts,
+                lastUpdated: new Date().toISOString()
+              };
+              saveLocalData(nextDb);
+              return nextDb;
+            });
+            setIsFirebaseConnected(true);
+            setIsOnline(true);
+            setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
           },
           (err) => {
             handleFirestoreError(err, OperationType.GET, 'contracts');
@@ -298,6 +330,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setupFirebase();
 
+    // Re-synchronize when device network reconnects or tab gains focus
+    const handleOnline = () => {
+      setIsOnline(true);
+      refreshData();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshData();
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     // Secondary backup sync with local express server
     let eventSource: EventSource | null = null;
     try {
@@ -324,6 +369,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (unsubscribeContracts) unsubscribeContracts();
       if (unsubscribeMainDoc) unsubscribeMainDoc();
       if (eventSource) eventSource.close();
