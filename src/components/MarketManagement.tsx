@@ -33,7 +33,11 @@ import {
   BellRing,
   Clock,
   AlertCircle,
-  Filter
+  Filter,
+  Database,
+  RefreshCw,
+  Radio,
+  HardDrive
 } from 'lucide-react';
 import { downloadCategoryExcel, downloadTemplateExcel } from '../utils/excelHelper.ts';
 import { getSystemMetrics } from '../utils/marketMetrics.ts';
@@ -43,7 +47,20 @@ interface MarketManagementProps {
 }
 
 export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }) => {
-  const { db, updateMarketStalls, addContract, updateContract, deleteContract } = useData();
+  const {
+    db,
+    updateMarketStalls,
+    addContract,
+    updateContract,
+    deleteContract,
+    isFirebaseConnected,
+    firestoreDatabaseId,
+    lastSyncedAt,
+    isLoading,
+    syncMarketToFirestore,
+    testFirebaseConnection,
+    refreshData
+  } = useData();
   const { currentUser } = useAuth();
   const canEdit = currentUser?.role === 'User';
 
@@ -191,12 +208,36 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [isSyncingFirebase, setIsSyncingFirebase] = useState(false);
+  const [isTestingFirebase, setIsTestingFirebase] = useState(false);
 
   const showSyncNotice = (msg: string) => {
     setSyncNotice(msg);
     setTimeout(() => {
       setSyncNotice(null);
-    }, 3500);
+    }, 4000);
+  };
+
+  const handleSyncToFirestore = async () => {
+    setIsSyncingFirebase(true);
+    const result = await syncMarketToFirestore(marketType);
+    setIsSyncingFirebase(false);
+    if (result.success) {
+      showSyncNotice(`เชื่อมต่อ Firebase สำเร็จ · สำรองและซิงค์ข้อมูลสัญญา${isNight ? 'ตลาดโต้รุ่ง' : 'ตลาดสด'} ${result.count} สัญญาขึ้น Firestore เรียบร้อยแล้ว`);
+    } else {
+      showSyncNotice(`เกิดข้อผิดพลาดในการเชื่อมต่อ: ${result.error || 'ไม่สามารถบันทึกได้'}`);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setIsTestingFirebase(true);
+    const ok = await testFirebaseConnection();
+    setIsTestingFirebase(false);
+    if (ok) {
+      showSyncNotice('การเชื่อมต่อ Firebase Firestore ทำงานปกติ (สถานะ: ออนไลน์ เรียลไทม์)');
+    } else {
+      showSyncNotice('ไม่สามารถเชื่อมต่อ Firebase Firestore ได้ในขณะนี้ กรุณาตรวจสอบเครือข่าย');
+    }
   };
 
   const openAddModal = () => {
@@ -285,7 +326,7 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
         securityDeposit: Number(formData.securityDeposit) || 0,
         notes: formData.notes
       });
-      showSyncNotice('แก้ไขสัญญาและบันทึกลงฐานข้อมูลกลางสำเร็จ · อัปเดตไปยังทุกเครื่องอัตโนมัติ');
+      showSyncNotice('แก้ไขสัญญาและบันทึกลงฐานข้อมูล Firebase Firestore สำเร็จ (เรียลไทม์)');
     } else {
       const newContract: MarketLeaseContract = {
         id: `ct-${marketType}-${Date.now()}`,
@@ -308,7 +349,7 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
         updatedAt: new Date().toISOString()
       };
       addContract(newContract);
-      showSyncNotice('เพิ่มสัญญาใหม่และบันทึกลงฐานข้อมูลกลางสำเร็จ · อัปเดตไปยังทุกเครื่องอัตโนมัติ');
+      showSyncNotice('เพิ่มสัญญาใหม่และบันทึกลงฐานข้อมูล Firebase Firestore สำเร็จ (เรียลไทม์)');
     }
     setIsModalOpen(false);
   };
@@ -317,7 +358,7 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     if (deleteId) {
       deleteContract(deleteId);
       setDeleteId(null);
-      showSyncNotice('ลบสัญญาและอัปเดตฐานข้อมูลกลางสำเร็จ · อัปเดตไปยังทุกเครื่องอัตโนมัติ');
+      showSyncNotice('ลบสัญญาและอัปเดตฐานข้อมูล Firebase Firestore สำเร็จ (เรียลไทม์)');
     }
   };
 
@@ -385,6 +426,72 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
               <span>+ เพิ่มสัญญาใหม่</span>
             </button>
           )}
+        </div>
+      </div>
+
+      {/* ☁️ กล่องสถานะและการจัดการฐานข้อมูลคลาวด์ Firebase Firestore */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-4 sm:p-5 rounded-xl shadow-xs border border-slate-700/60">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>เชื่อมต่อ Firebase Firestore สำเร็จ</span>
+              </span>
+              <span className="text-xs text-slate-300 font-mono-num flex items-center gap-1">
+                <Database className="w-3.5 h-3.5 text-indigo-400" />
+                <span>DB ID: <code className="text-amber-300 bg-black/40 px-1.5 py-0.5 rounded text-[11px]">{firestoreDatabaseId}</code></span>
+              </span>
+              <span className="text-xs text-slate-300 font-mono-num">
+                Collection: <code className="text-sky-300 bg-black/40 px-1.5 py-0.5 rounded text-[11px]">contracts</code>
+              </span>
+            </div>
+            <p className="text-xs text-slate-300">
+              ฐานข้อมูลสัญญาเช่า{isNight ? 'ตลาดโต้รุ่ง' : 'ตลาดสด'} ซิงค์เรียลไทม์อัตโนมัติ ทุกครั้งที่มีการเพิ่ม แก้ไข หรือลบสัญญา ข้อมูลจะถูกจัดเก็บบน Google Cloud Firestore ทันที
+            </p>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400 font-mono-num">
+              <span>จำนวนสัญญาในตลาด: <strong className="text-white font-bold">{contracts.length}</strong> สัญญา</span>
+              <span>•</span>
+              <span>สถานะ: <strong className="text-emerald-400 font-semibold">{isFirebaseConnected ? 'ออนไลน์ (เชื่อมต่อเรียบร้อย)' : 'กำลังเชื่อมต่อ'}</strong></span>
+              <span>•</span>
+              <span>อัปเดตล่าสุด: <strong className="text-slate-200">{lastSyncedAt}</strong></span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 self-start lg:self-center shrink-0">
+            <button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={isTestingFirebase}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-white/10 hover:bg-white/20 border border-white/10 rounded-lg transition-colors cursor-pointer"
+              title="ตรวจสอบการเชื่อมต่อกับ Firebase Firestore"
+            >
+              <Radio className={`w-3.5 h-3.5 text-amber-400 ${isTestingFirebase ? 'animate-pulse' : ''}`} />
+              <span>{isTestingFirebase ? 'กำลังตรวจสอบ...' : 'ทดสอบการเชื่อมต่อ'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => refreshData()}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-white/10 hover:bg-white/20 border border-white/10 rounded-lg transition-colors cursor-pointer"
+              title="ดึงข้อมูลล่าสุดจาก Firebase"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-sky-400 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>ดึงข้อมูลล่าสุด</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSyncToFirestore}
+              disabled={isSyncingFirebase}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-sm transition-colors cursor-pointer"
+              title="สำรองข้อมูลสัญญาตลาดทั้งหมดขึ้นฐานข้อมูล Cloud Firestore"
+            >
+              <Database className={`w-3.5 h-3.5 ${isSyncingFirebase ? 'animate-spin' : ''}`} />
+              <span>{isSyncingFirebase ? 'กำลังบันทึกลง Firebase...' : 'สำรองสัญญาขึ้น Firebase'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1332,6 +1439,14 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                   placeholder="เช่น จำหน่ายอาหารตามสั่ง, ขนมของหวาน, ผลไม้สด"
                   className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg"
                 />
+              </div>
+
+              {/* Firebase Cloud Firestore Sync Badge */}
+              <div className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                <Database className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span>
+                  สัญญาจะถูกบันทึกและซิงค์ตรงไปยังฐานข้อมูล <strong>Firebase Firestore</strong> (Collection: <code>contracts</code>) อัตโนมัติแบบเรียลไทม์
+                </span>
               </div>
 
               {/* Action Buttons */}

@@ -5,6 +5,8 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 /* CRITICAL: Must specify firebaseConfig.firestoreDatabaseId for named Firestore database */
 export const firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId;
+export { firebaseConfig };
 
 export enum OperationType {
   CREATE = 'create',

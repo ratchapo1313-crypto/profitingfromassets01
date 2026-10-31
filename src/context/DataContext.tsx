@@ -6,8 +6,8 @@ import {
   DailyRevenue
 } from '../types.ts';
 import { initialDatabase } from '../data/initialData.ts';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-import { firestore, handleFirestoreError, OperationType, testConnection } from '../firebase.ts';
+import { doc, getDoc, setDoc, deleteDoc, writeBatch, onSnapshot } from 'firebase/firestore';
+import { firestore, firestoreDatabaseId, handleFirestoreError, OperationType, testConnection } from '../firebase.ts';
 
 interface DataContextType {
   db: AppDatabase;
@@ -15,6 +15,7 @@ interface DataContextType {
   lastSyncedAt: string;
   isOnline: boolean;
   isFirebaseConnected: boolean;
+  firestoreDatabaseId: string;
   updateMarketStalls: (type: MarketType, totalStalls: number) => Promise<void>;
   addContract: (contract: MarketLeaseContract) => Promise<void>;
   updateContract: (id: string, updatedFields: Partial<MarketLeaseContract>) => Promise<void>;
@@ -33,6 +34,8 @@ interface DataContextType {
     items: any[],
     totalStalls?: number
   ) => Promise<void>;
+  syncMarketToFirestore: (marketType: MarketType) => Promise<{ success: boolean; count: number; error?: string }>;
+  testFirebaseConnection: () => Promise<boolean>;
   resetToDefault: () => Promise<void>;
   refreshData: () => Promise<void>;
 }
@@ -260,7 +263,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 2. Add Contract (optimistic update + Firebase persistence)
+  // 2. Add Contract (optimistic update + Cloud Firestore contracts collection + app_state persistence)
   const addContract = async (contract: MarketLeaseContract) => {
     const targetType = contract.marketType;
     const sameMarket = dbRef.current.contracts.filter((c) => c.marketType === targetType);
@@ -276,7 +279,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDb(newDb);
     saveLocalData(newDb);
 
+    // Persist to both /contracts/{contractId} and /app_state/main in Cloud Firestore
+    try {
+      const contractRef = doc(firestore, 'contracts', contract.id);
+      await setDoc(contractRef, cleanForFirestore(contract));
+      setIsFirebaseConnected(true);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `contracts/${contract.id}`);
+    }
+
     syncToCloud(newDb);
+
     try {
       await fetch('/api/contracts', {
         method: 'POST',
@@ -288,15 +301,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 3. Update Contract (optimistic update + Firebase persistence)
+  // 3. Update Contract (optimistic update + Cloud Firestore contracts collection persistence)
   const updateContract = async (id: string, updatedFields: Partial<MarketLeaseContract>) => {
+    let updatedItem: MarketLeaseContract | undefined;
     const newContracts = dbRef.current.contracts.map((c) => {
       if (c.id === id) {
-        return {
+        updatedItem = {
           ...c,
           ...updatedFields,
           updatedAt: new Date().toISOString()
         };
+        return updatedItem;
       }
       return c;
     });
@@ -309,7 +324,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDb(newDb);
     saveLocalData(newDb);
 
+    // Persist to individual doc in Firestore
+    if (updatedItem) {
+      try {
+        const contractRef = doc(firestore, 'contracts', id);
+        await setDoc(contractRef, cleanForFirestore(updatedItem), { merge: true });
+        setIsFirebaseConnected(true);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `contracts/${id}`);
+      }
+    }
+
     syncToCloud(newDb);
+
     try {
       await fetch(`/api/contracts/${id}`, {
         method: 'PUT',
@@ -321,7 +348,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 4. Delete Contract (optimistic update + Firebase persistence)
+  // 4. Delete Contract (optimistic update + Cloud Firestore contracts collection removal)
   const deleteContract = async (id: string) => {
     const target = dbRef.current.contracts.find((c) => c.id === id);
     if (!target) return;
@@ -345,7 +372,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDb(newDb);
     saveLocalData(newDb);
 
+    // Remove from individual Firestore contracts collection
+    try {
+      const contractRef = doc(firestore, 'contracts', id);
+      await deleteDoc(contractRef);
+      setIsFirebaseConnected(true);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `contracts/${id}`);
+    }
+
     syncToCloud(newDb);
+
     try {
       await fetch(`/api/contracts/${id}`, { method: 'DELETE' });
     } catch {
@@ -494,6 +531,56 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(false);
   };
 
+  // 10. Explicitly synchronize all contracts of a market to Cloud Firestore 'contracts' collection
+  const syncMarketToFirestore = async (
+    marketType: MarketType
+  ): Promise<{ success: boolean; count: number; error?: string }> => {
+    setIsLoading(true);
+    try {
+      const marketContracts = dbRef.current.contracts.filter((c) => c.marketType === marketType);
+      const batch = writeBatch(firestore);
+
+      // Write each contract to 'contracts/{id}' collection
+      for (const contract of marketContracts) {
+        const contractRef = doc(firestore, 'contracts', contract.id);
+        batch.set(contractRef, cleanForFirestore(contract), { merge: true });
+      }
+
+      // Also ensure main document is updated
+      const mainDocRef = doc(firestore, 'app_state', 'main');
+      batch.set(mainDocRef, cleanForFirestore(dbRef.current), { merge: true });
+
+      await batch.commit();
+
+      setIsFirebaseConnected(true);
+      setIsOnline(true);
+      const nowStr = new Date().toLocaleTimeString('th-TH');
+      setLastSyncedAt(nowStr);
+      return { success: true, count: marketContracts.length };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      handleFirestoreError(err, OperationType.WRITE, 'contracts');
+      return { success: false, count: 0, error: errorMsg };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 11. Test Firebase connection
+  const testFirebaseConnection = async (): Promise<boolean> => {
+    try {
+      const ok = await testConnection();
+      setIsFirebaseConnected(ok);
+      if (ok) {
+        setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
+      }
+      return ok;
+    } catch {
+      setIsFirebaseConnected(false);
+      return false;
+    }
+  };
+
   return (
     <DataContext.Provider
       value={{
@@ -502,6 +589,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         lastSyncedAt,
         isOnline,
         isFirebaseConnected,
+        firestoreDatabaseId,
         updateMarketStalls,
         addContract,
         updateContract,
@@ -510,6 +598,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteDailyRevenue,
         updateApproval,
         importBatch,
+        syncMarketToFirestore,
+        testFirebaseConnection,
         resetToDefault,
         refreshData
       }}
