@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { LogOut, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { useData } from '../context/DataContext.tsx';
+import { getContractExpiryInfo } from '../utils/thaiFormat.ts';
 
 export type NavTab = 'overview' | 'night_market' | 'fresh_market' | 'official_memo' | 'excel_tools';
 
@@ -12,7 +13,25 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => {
   const { currentUser, logout } = useAuth();
-  const { lastSyncedAt, refreshData, isLoading } = useData();
+  const { lastSyncedAt, refreshData, isLoading, db } = useData();
+
+  const nightExpiringCount = useMemo(() => {
+    return (db.contracts || [])
+      .filter((c) => c.marketType === 'night')
+      .filter((c) => {
+        const info = getContractExpiryInfo(c.endDate);
+        return info.status === 'critical' || info.status === 'warning' || info.status === 'expired';
+      }).length;
+  }, [db.contracts]);
+
+  const freshExpiringCount = useMemo(() => {
+    return (db.contracts || [])
+      .filter((c) => c.marketType === 'fresh')
+      .filter((c) => {
+        const info = getContractExpiryInfo(c.endDate);
+        return info.status === 'critical' || info.status === 'warning' || info.status === 'expired';
+      }).length;
+  }, [db.contracts]);
 
   if (!currentUser) return null;
 
@@ -50,7 +69,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
                   : 'text-slate-600'
               }`}
             >
-              ตลาดโต้รุ่ง
+              <span className="flex items-center gap-1.5">
+                <span>ตลาดโต้รุ่ง</span>
+                {nightExpiringCount > 0 && (
+                  <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 rounded-full font-bold font-mono-num">
+                    {nightExpiringCount}
+                  </span>
+                )}
+              </span>
             </button>
             <button
               onClick={() => setCurrentTab('fresh_market')}
@@ -60,7 +86,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
                   : 'text-slate-600'
               }`}
             >
-              ตลาดสด
+              <span className="flex items-center gap-1.5">
+                <span>ตลาดสด</span>
+                {freshExpiringCount > 0 && (
+                  <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 rounded-full font-bold font-mono-num">
+                    {freshExpiringCount}
+                  </span>
+                )}
+              </span>
             </button>
             <button
               onClick={() => setCurrentTab('official_memo')}
@@ -129,19 +162,29 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
           </button>
           <button
             onClick={() => setCurrentTab('night_market')}
-            className={`px-2.5 py-1 rounded whitespace-nowrap ${
+            className={`px-2.5 py-1 rounded whitespace-nowrap flex items-center gap-1 ${
               currentTab === 'night_market' ? 'bg-slate-900 text-white' : 'text-slate-600'
             }`}
           >
-            ตลาดโต้รุ่ง
+            <span>ตลาดโต้รุ่ง</span>
+            {nightExpiringCount > 0 && (
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold font-mono-num ${currentTab === 'night_market' ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-900'}`}>
+                {nightExpiringCount}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setCurrentTab('fresh_market')}
-            className={`px-2.5 py-1 rounded whitespace-nowrap ${
+            className={`px-2.5 py-1 rounded whitespace-nowrap flex items-center gap-1 ${
               currentTab === 'fresh_market' ? 'bg-slate-900 text-white' : 'text-slate-600'
             }`}
           >
-            ตลาดสด
+            <span>ตลาดสด</span>
+            {freshExpiringCount > 0 && (
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold font-mono-num ${currentTab === 'fresh_market' ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-900'}`}>
+                {freshExpiringCount}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setCurrentTab('official_memo')}

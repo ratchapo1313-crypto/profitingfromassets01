@@ -7,7 +7,9 @@ import {
   formatInteger,
   formatThaiDate,
   calculateEndDate,
-  buildDurationLabel
+  buildDurationLabel,
+  getContractExpiryInfo,
+  ContractExpiryInfo
 } from '../utils/thaiFormat.ts';
 import {
   Plus,
@@ -23,7 +25,15 @@ import {
   X,
   FileSpreadsheet,
   CheckCircle2,
-  FileDown
+  FileDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  BellRing,
+  Clock,
+  AlertCircle,
+  Filter
 } from 'lucide-react';
 import { downloadCategoryExcel, downloadTemplateExcel } from '../utils/excelHelper.ts';
 import { getSystemMetrics } from '../utils/marketMetrics.ts';
@@ -55,19 +65,80 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
   const totalSecurityDeposit = metrics.securityDeposit;
   const totalTransactionFees = metrics.transactionFee;
 
-  // Search filter
+  // Search and expiry status filter
   const [searchTerm, setSearchTerm] = useState('');
+  const [expiryFilter, setExpiryFilter] = useState<'all' | 'expiring' | 'expired' | 'normal'>('all');
+
+  // Pagination state: "แสดงหน้าละ" (items per page)
+  const [pageSize, setPageSize] = useState<number | 'all'>(10);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Map of contractId -> ExpiryInfo
+  const contractExpiryMap = useMemo(() => {
+    const map = new Map<string, ContractExpiryInfo>();
+    contracts.forEach((c) => {
+      map.set(c.id, getContractExpiryInfo(c.endDate));
+    });
+    return map;
+  }, [contracts]);
+
+  // Overall counts for alert badges and banner
+  const expiryStats = useMemo(() => {
+    let expired = 0;
+    let critical = 0; // <= 30 days
+    let warning = 0; // 31 - 60 days
+    contracts.forEach((c) => {
+      const info = contractExpiryMap.get(c.id);
+      if (!info) return;
+      if (info.status === 'expired') expired++;
+      else if (info.status === 'critical') critical++;
+      else if (info.status === 'warning') warning++;
+    });
+    return {
+      expired,
+      critical,
+      warning,
+      expiringTotal: critical + warning
+    };
+  }, [contracts, contractExpiryMap]);
+
+  // Filtered contracts by search AND expiryFilter
   const filteredContracts = useMemo(() => {
-    if (!searchTerm.trim()) return contracts;
-    const term = searchTerm.toLowerCase();
-    return contracts.filter(
-      (c) =>
-        c.assetName.toLowerCase().includes(term) ||
-        c.contractNo.toLowerCase().includes(term) ||
-        c.tenantName.toLowerCase().includes(term) ||
-        (c.notes && c.notes.toLowerCase().includes(term))
-    );
-  }, [contracts, searchTerm]);
+    return contracts.filter((c) => {
+      // Expiry filter
+      if (expiryFilter !== 'all') {
+        const info = contractExpiryMap.get(c.id);
+        if (!info) return false;
+        if (expiryFilter === 'expiring' && !(info.status === 'critical' || info.status === 'warning')) return false;
+        if (expiryFilter === 'expired' && info.status !== 'expired') return false;
+        if (expiryFilter === 'normal' && info.status !== 'normal') return false;
+      }
+
+      // Search term
+      if (searchTerm.trim()) {
+        const term = searchTerm.toLowerCase();
+        const matches =
+          c.assetName.toLowerCase().includes(term) ||
+          c.contractNo.toLowerCase().includes(term) ||
+          c.tenantName.toLowerCase().includes(term) ||
+          (c.notes && c.notes.toLowerCase().includes(term));
+        if (!matches) return false;
+      }
+
+      return true;
+    });
+  }, [contracts, searchTerm, expiryFilter, contractExpiryMap]);
+
+  // Total pages and current page slice
+  const totalItems = filteredContracts.length;
+  const totalPages = pageSize === 'all' ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const startIndex = pageSize === 'all' ? 0 : (safeCurrentPage - 1) * pageSize;
+  const endIndex = pageSize === 'all' ? totalItems : Math.min(startIndex + pageSize, totalItems);
+  const paginatedContracts = useMemo(() => {
+    return filteredContracts.slice(startIndex, endIndex);
+  }, [filteredContracts, startIndex, endIndex]);
 
   // Total stalls +/- handlers
   const handleStallChange = (delta: number) => {
@@ -89,7 +160,20 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
   const [editingContract, setEditingContract] = useState<MarketLeaseContract | null>(null);
 
   // Form Fields
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{
+    assetName: string;
+    contractNo: string;
+    tenantName: string;
+    startDate: string;
+    durationYears: number;
+    durationMonths: number;
+    durationDays: number;
+    endDate: string;
+    transactionFee: number | string;
+    monthlyRent: number | string;
+    securityDeposit: number | string;
+    notes: string;
+  }>({
     assetName: '',
     contractNo: '',
     tenantName: '',
@@ -417,35 +501,215 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
         </div>
       </div>
 
-      {/* 2. แสดงตารางสัญญาเช่า (มีสัญญาเช่าแล้ว) */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
-        <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-slate-900">
-              ตารางสัญญาเช่า ({contracts.length} สัญญา)
-            </span>
-            <span className="text-xs text-slate-500">· ปีงบประมาณ พ.ศ. 2570</span>
-          </div>
+      {/* Expiration Alert Banner */}
+      {(expiryStats.expiringTotal > 0 || expiryStats.expired > 0) && (
+        <div className="p-4 bg-gradient-to-r from-amber-50/90 via-orange-50/80 to-amber-50/90 border border-amber-200 rounded-xl shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-amber-100 text-amber-800 rounded-lg shrink-0 mt-0.5 shadow-2xs">
+                <BellRing className="w-5 h-5 text-amber-700 animate-bounce" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold text-amber-950 flex items-center gap-1.5">
+                    การแจ้งเตือนสัญญาเช่าใกล้สิ้นสุดสัญญา
+                  </h3>
+                  <span className="text-[11px] font-bold bg-amber-200/90 text-amber-900 px-2 py-0.5 rounded-full font-mono-num border border-amber-300">
+                    พบ {expiryStats.expiringTotal + expiryStats.expired} สัญญา
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-amber-900 mt-1">
+                  {expiryStats.critical > 0 && (
+                    <span className="inline-flex items-center gap-1 font-semibold text-rose-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping inline-block"></span>
+                      ใกล้สิ้นสุดสัญญาภายใน 30 วัน: <span className="font-mono-num font-bold">{expiryStats.critical}</span> สัญญา
+                    </span>
+                  )}
+                  {expiryStats.warning > 0 && (
+                    <span className="inline-flex items-center gap-1 text-amber-800">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span>
+                      ใกล้สิ้นสุดสัญญาภายใน 31-60 วัน: <span className="font-mono-num font-bold">{expiryStats.warning}</span> สัญญา
+                    </span>
+                  )}
+                  {expiryStats.expired > 0 && (
+                    <span className="inline-flex items-center gap-1 font-bold text-red-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-600 inline-block"></span>
+                      หมดอายุแล้ว: <span className="font-mono-num">{expiryStats.expired}</span> สัญญา
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
 
-          {/* Search box */}
-          <div className="relative w-full sm:w-64">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="ค้นหาชื่อล็อค, เลขที่สัญญา, ผู้เช่า..."
-              className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900"
-            />
-            {searchTerm && (
+            {/* Quick Filter action buttons */}
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-center shrink-0">
               <button
                 type="button"
-                onClick={() => setSearchTerm('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                onClick={() => {
+                  setExpiryFilter(expiryFilter === 'expiring' ? 'all' : 'expiring');
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  expiryFilter === 'expiring'
+                    ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                    : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100'
+                }`}
               >
-                <X className="w-3 h-3" />
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                {expiryFilter === 'expiring' ? 'กำลังกรอง: ใกล้สิ้นสุด' : `ดูสัญญาใกล้สิ้นสุด (${expiryStats.expiringTotal})`}
               </button>
-            )}
+
+              {expiryStats.expired > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpiryFilter(expiryFilter === 'expired' ? 'all' : 'expired');
+                    setCurrentPage(1);
+                  }}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 ${
+                    expiryFilter === 'expired'
+                      ? 'bg-rose-600 border-rose-600 text-white shadow-xs'
+                      : 'bg-white border-rose-300 text-rose-800 hover:bg-rose-100'
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  {expiryFilter === 'expired' ? 'กำลังกรอง: หมดสัญญา' : `ดูหมดสัญญา (${expiryStats.expired})`}
+                </button>
+              )}
+
+              {expiryFilter !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpiryFilter('all');
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  แสดงทั้งหมด
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. แสดงตารางสัญญาเช่า (มีสัญญาเช่าแล้ว) */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
+        <div className="p-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-50/50">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-slate-900">
+                ตารางสัญญาเช่า ({contracts.length} สัญญา)
+              </span>
+              <span className="text-xs text-slate-500">· ปีงบประมาณ พ.ศ. 2570</span>
+            </div>
+
+            {/* Quick Status Filter Tabs */}
+            <div className="flex items-center gap-1 bg-slate-200/70 p-0.5 rounded-lg text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setExpiryFilter('all');
+                  setCurrentPage(1);
+                }}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer ${
+                  expiryFilter === 'all'
+                    ? 'bg-white text-slate-900 shadow-2xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                ทั้งหมด ({contracts.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setExpiryFilter('expiring');
+                  setCurrentPage(1);
+                }}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+                  expiryFilter === 'expiring'
+                    ? 'bg-amber-500 text-white shadow-2xs font-semibold'
+                    : 'text-amber-800 hover:bg-amber-100/50'
+                }`}
+              >
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span>ใกล้สิ้นสุด</span>
+                {expiryStats.expiringTotal > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono-num font-bold ${expiryFilter === 'expiring' ? 'bg-amber-700 text-white' : 'bg-amber-200 text-amber-900'}`}>
+                    {expiryStats.expiringTotal}
+                  </span>
+                )}
+              </button>
+              {expiryStats.expired > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpiryFilter('expired');
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+                    expiryFilter === 'expired'
+                      ? 'bg-rose-600 text-white shadow-2xs font-semibold'
+                      : 'text-rose-700 hover:bg-rose-100/50'
+                  }`}
+                >
+                  <AlertCircle className="w-3 h-3 shrink-0" />
+                  <span>หมดสัญญา</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono-num font-bold ${expiryFilter === 'expired' ? 'bg-rose-800 text-white' : 'bg-rose-200 text-rose-900'}`}>
+                    {expiryStats.expired}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* แสดงหน้าละ (Items Per Page Selector in Header) */}
+            <div className="flex items-center gap-1.5 text-xs text-slate-600">
+              <span className="whitespace-nowrap font-medium">แสดงหน้าละ:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900 font-medium cursor-pointer"
+              >
+                <option value={10}>10 รายการ</option>
+                <option value={20}>20 รายการ</option>
+                <option value={50}>50 รายการ</option>
+                <option value={100}>100 รายการ</option>
+                <option value="all">ทั้งหมด ({filteredContracts.length})</option>
+              </select>
+            </div>
+
+            {/* Search box */}
+            <div className="relative w-full sm:w-60">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="ค้นหาชื่อล็อค, เลขที่สัญญา, ผู้เช่า..."
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchTerm('');
+                    setCurrentPage(1);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -460,7 +724,7 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                 <th className="py-3 px-3 min-w-[110px]">4. เลขที่สัญญา</th>
                 <th className="py-3 px-3 min-w-[95px]">5. วันที่เริ่มสัญญา</th>
                 <th className="py-3 px-3 min-w-[100px]">6. กำหนดระยะเวลาการเช่า</th>
-                <th className="py-3 px-3 min-w-[95px]">7. วันที่สิ้นสุดสัญญา</th>
+                <th className="py-3 px-3 min-w-[125px]">7. วันที่สิ้นสุดสัญญา</th>
                 <th className="py-3 px-3 text-right min-w-[100px]">8. ค่าธรรมเนียม</th>
                 <th className="py-3 px-3 text-right min-w-[110px]">9. ค่าเช่า/เดือน</th>
                 <th className="py-3 px-3 text-right min-w-[110px]">10. เงินประกันสัญญา</th>
@@ -468,96 +732,158 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-800">
-              {filteredContracts.length === 0 ? (
+              {paginatedContracts.length === 0 ? (
                 <tr>
                   <td colSpan={11} className="py-8 text-center text-slate-500">
-                    {searchTerm ? 'ไม่พบข้อมูลสัญญาที่ตรงกับคำค้นหา' : 'ยังไม่มีสัญญาเช่าในระบบ'}
+                    {searchTerm || expiryFilter !== 'all' ? (
+                      <div className="space-y-1">
+                        <div>ไม่พบข้อมูลสัญญาที่ตรงกับเงื่อนไขการค้นหาหรือตัวกรอง</div>
+                        {expiryFilter !== 'all' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpiryFilter('all');
+                              setSearchTerm('');
+                              setCurrentPage(1);
+                            }}
+                            className="text-xs text-blue-600 hover:underline font-medium cursor-pointer"
+                          >
+                            ล้างตัวกรองเพื่อแสดงทั้งหมด
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      'ยังไม่มีสัญญาเช่าในระบบ'
+                    )}
                   </td>
                 </tr>
               ) : (
-                filteredContracts.map((c, index) => (
-                  <tr key={c.id} className="hover:bg-slate-50/80 transition-colors">
-                    {/* 1. ลำดับ */}
-                    <td className="py-2.5 px-3 text-center font-mono-num text-slate-500">
-                      {c.order || index + 1}
-                    </td>
+                paginatedContracts.map((c, index) => {
+                  const expiry = contractExpiryMap.get(c.id) || getContractExpiryInfo(c.endDate);
+                  const isExpiring = expiry.status === 'critical' || expiry.status === 'warning';
+                  const isExpired = expiry.status === 'expired';
 
-                    {/* 2. รายการทรัพย์สิน (ชื่อล็อค/แผงค้า) */}
-                    <td className="py-2.5 px-3 font-medium text-slate-900">
-                      <div>{c.assetName}</div>
-                      {c.notes && <div className="text-[11px] text-slate-500 truncate max-w-[200px]">{c.notes}</div>}
-                    </td>
+                  return (
+                    <tr
+                      key={c.id}
+                      className={`transition-colors ${
+                        isExpired
+                          ? 'bg-rose-50/50 hover:bg-rose-50/80'
+                          : isExpiring
+                          ? 'bg-amber-50/40 hover:bg-amber-50/70'
+                          : 'hover:bg-slate-50/80'
+                      }`}
+                    >
+                      {/* 1. ลำดับ */}
+                      <td className="py-2.5 px-3 text-center font-mono-num text-slate-500">
+                        {c.order || startIndex + index + 1}
+                      </td>
 
-                    {/* 3. ชื่อผู้เช่า / ผู้ประกอบการ */}
-                    <td className="py-2.5 px-3">
-                      <div className="font-semibold text-slate-900">{c.tenantName || '-'}</div>
-                      <span className="inline-block text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-0.5">
-                        ผู้ประกอบการ
-                      </span>
-                    </td>
+                      {/* 2. รายการทรัพย์สิน (ชื่อล็อค/แผงค้า) */}
+                      <td className="py-2.5 px-3 font-medium text-slate-900">
+                        <div>{c.assetName}</div>
+                        {c.notes && <div className="text-[11px] text-slate-500 truncate max-w-[200px]">{c.notes}</div>}
+                      </td>
 
-                    {/* 4. เลขที่สัญญา */}
-                    <td className="py-2.5 px-3 font-mono-num font-medium text-slate-800">
-                      {c.contractNo}
-                    </td>
+                      {/* 3. ชื่อผู้เช่า / ผู้ประกอบการ */}
+                      <td className="py-2.5 px-3">
+                        <div className="font-semibold text-slate-900">{c.tenantName || '-'}</div>
+                        <span className="inline-block text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-0.5">
+                          ผู้ประกอบการ
+                        </span>
+                      </td>
 
-                    {/* 5. วันที่เริ่มสัญญา */}
-                    <td className="py-2.5 px-3 font-mono-num text-slate-700 whitespace-nowrap">
-                      {formatThaiDate(c.startDate, { short: true })}
-                    </td>
+                      {/* 4. เลขที่สัญญา */}
+                      <td className="py-2.5 px-3 font-mono-num font-medium text-slate-800">
+                        {c.contractNo}
+                      </td>
 
-                    {/* 6. กำหนดระยะเวลาการเช่า */}
-                    <td className="py-2.5 px-3 text-slate-700 font-medium">
-                      {c.duration || buildDurationLabel(c.durationYears, c.durationMonths, c.durationDays)}
-                    </td>
+                      {/* 5. วันที่เริ่มสัญญา */}
+                      <td className="py-2.5 px-3 font-mono-num text-slate-700 whitespace-nowrap">
+                        {formatThaiDate(c.startDate, { short: true })}
+                      </td>
 
-                    {/* 7. วันที่สิ้นสุดสัญญา (ระบบคำนวณอัตโนมัติ) */}
-                    <td className="py-2.5 px-3 font-mono-num text-slate-900 font-medium whitespace-nowrap">
-                      {formatThaiDate(c.endDate, { short: true })}
-                    </td>
+                      {/* 6. กำหนดระยะเวลาการเช่า */}
+                      <td className="py-2.5 px-3 text-slate-700 font-medium">
+                        {c.duration || buildDurationLabel(c.durationYears, c.durationMonths, c.durationDays)}
+                      </td>
 
-                    {/* 8. ค่าธรรมเนียมการทำธุรกรรม */}
-                    <td className="py-2.5 px-3 text-right font-mono-num text-slate-700">
-                      {formatCurrency(c.transactionFee)}
-                    </td>
-
-                    {/* 9. จำนวนค่าเช่า/เดือน */}
-                    <td className="py-2.5 px-3 text-right font-mono-num font-semibold text-slate-900">
-                      {formatCurrency(c.monthlyRent)}
-                    </td>
-
-                    {/* 10. เงินประกันสัญญาเช่า */}
-                    <td className="py-2.5 px-3 text-right font-mono-num text-slate-700">
-                      {formatCurrency(c.securityDeposit)}
-                    </td>
-
-                    {/* 11. จัดการ: ปุ่มแก้ไข และปุ่มลบสัญญา */}
-                    <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                      {canEdit ? (
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(c)}
-                            title="แก้ไขสัญญา"
-                            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeleteId(c.id)}
-                            title="ลบสัญญา"
-                            className="p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                      {/* 7. วันที่สิ้นสุดสัญญา พร้อมการแจ้งเตือน */}
+                      <td className="py-2.5 px-3 font-mono-num whitespace-nowrap">
+                        <div className="font-semibold text-slate-900">
+                          {formatThaiDate(c.endDate, { short: true })}
                         </div>
-                      ) : (
-                        <span className="text-[11px] text-slate-400">ดูข้อมูล</span>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                        <div className="mt-1">
+                          {expiry.status === 'expired' && (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-rose-100 text-rose-800 border border-rose-300 shadow-2xs">
+                              <AlertCircle className="w-3 h-3 text-rose-600 shrink-0" />
+                              หมดสัญญา ({Math.abs(expiry.daysLeft)} วัน)
+                            </span>
+                          )}
+                          {expiry.status === 'critical' && (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-pulse">
+                              <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                              {expiry.daysLeft === 0 ? 'สิ้นสุดวันนี้' : `ใกล้สิ้นสุด (เหลือ ${expiry.daysLeft} วัน)`}
+                            </span>
+                          )}
+                          {expiry.status === 'warning' && (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              <Clock className="w-3 h-3 text-amber-600 shrink-0" />
+                              ใกล้สิ้นสุด (เหลือ ${expiry.daysLeft} วัน)
+                            </span>
+                          )}
+                          {expiry.status === 'normal' && (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-emerald-700 bg-emerald-50 border border-emerald-200">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                              ปกติ
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* 8. ค่าธรรมเนียมการทำธุรกรรม */}
+                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-700">
+                        {formatCurrency(c.transactionFee)}
+                      </td>
+
+                      {/* 9. จำนวนค่าเช่า/เดือน */}
+                      <td className="py-2.5 px-3 text-right font-mono-num font-semibold text-slate-900">
+                        {formatCurrency(c.monthlyRent)}
+                      </td>
+
+                      {/* 10. เงินประกันสัญญาเช่า */}
+                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-700">
+                        {formatCurrency(c.securityDeposit)}
+                      </td>
+
+                      {/* 11. จัดการ: ปุ่มแก้ไข และปุ่มลบสัญญา */}
+                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                        {canEdit ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(c)}
+                              title="แก้ไขสัญญา"
+                              className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteId(c.id)}
+                              title="ลบสัญญา"
+                              className="p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">ดูข้อมูล</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
             {/* Table Footer with Sums */}
@@ -587,6 +913,112 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
               </tfoot>
             )}
           </table>
+        </div>
+
+        {/* Pagination & Items Per Page Bar */}
+        <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-700">
+          <div className="flex flex-wrap items-center gap-4">
+            {/* แสดงหน้าละ (Items Per Page Selector) */}
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 font-medium">แสดงหน้าละ:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900 font-medium cursor-pointer"
+              >
+                <option value={10}>10 รายการ</option>
+                <option value={20}>20 รายการ</option>
+                <option value={50}>50 รายการ</option>
+                <option value={100}>100 รายการ</option>
+                <option value="all">ทั้งหมด ({filteredContracts.length})</option>
+              </select>
+            </div>
+
+            {/* แสดงรายการที่ X - Y จากทั้งหมด Z รายการ */}
+            <div className="text-slate-500">
+              แสดงรายการที่{' '}
+              <span className="font-semibold text-slate-900 font-mono-num">
+                {totalItems > 0 ? startIndex + 1 : 0}
+              </span>{' '}
+              -{' '}
+              <span className="font-semibold text-slate-900 font-mono-num">{endIndex}</span>{' '}
+              จากทั้งหมด{' '}
+              <span className="font-semibold text-slate-900 font-mono-num">{totalItems}</span>{' '}
+              รายการ
+            </div>
+          </div>
+
+          {/* Navigation Buttons */}
+          {pageSize !== 'all' && totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(1)}
+                disabled={safeCurrentPage <= 1}
+                title="หน้าแรก"
+                className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 cursor-pointer"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={safeCurrentPage <= 1}
+                title="ย้อนกลับ"
+                className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              {/* Page Number Buttons */}
+              <div className="flex items-center gap-1 px-1">
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - safeCurrentPage) <= 1)
+                  .map((p, idx, arr) => {
+                    const prev = arr[idx - 1];
+                    const showEllipsis = prev && p - prev > 1;
+                    return (
+                      <React.Fragment key={p}>
+                        {showEllipsis && <span className="px-1 text-slate-400">...</span>}
+                        <button
+                          type="button"
+                          onClick={() => setCurrentPage(p)}
+                          className={`min-w-8 h-8 px-2 text-xs font-semibold rounded-md border cursor-pointer transition-colors ${
+                            p === safeCurrentPage
+                              ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                              : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      </React.Fragment>
+                    );
+                  })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safeCurrentPage >= totalPages}
+                title="ถัดไป"
+                className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={safeCurrentPage >= totalPages}
+                title="หน้าสุดท้าย"
+                className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 cursor-pointer"
+              >
+                <ChevronsRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -831,10 +1263,10 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                   <input
                     type="number"
                     min="0"
-                    step="50"
+                    step="any"
                     value={formData.transactionFee}
                     onChange={(e) =>
-                      setFormData({ ...formData, transactionFee: parseFloat(e.target.value) || 0 })
+                      setFormData({ ...formData, transactionFee: e.target.value })
                     }
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num"
                   />
@@ -848,37 +1280,43 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                   <input
                     type="number"
                     min="0"
-                    step="100"
+                    step="any"
                     required
                     value={formData.monthlyRent}
-                    onChange={(e) => {
-                      const rent = parseFloat(e.target.value) || 0;
-                      // Auto suggest deposit as 2x monthly rent if not changed
+                    onChange={(e) =>
                       setFormData({
                         ...formData,
-                        monthlyRent: rent,
-                        securityDeposit: rent * 2
-                      });
-                    }}
+                        monthlyRent: e.target.value
+                      })
+                    }
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num font-semibold"
                   />
                 </div>
 
                 {/* 9. เงินประกันสัญญาเช่า */}
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    9. เงินประกันสัญญา (บาท)
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-semibold text-slate-700">
+                      9. เงินประกันสัญญา (บาท)
+                    </label>
+                    <span className="text-[11px] text-emerald-600 font-medium bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                      ใส่จำนวนเท่าไหร่ก็ได้
+                    </span>
+                  </div>
                   <input
                     type="number"
                     min="0"
-                    step="100"
+                    step="any"
+                    placeholder="ใส่จำนวนเท่าไหร่ก็ได้ เช่น 0, 1000, 5000"
                     value={formData.securityDeposit}
                     onChange={(e) =>
-                      setFormData({ ...formData, securityDeposit: parseFloat(e.target.value) || 0 })
+                      setFormData({ ...formData, securityDeposit: e.target.value })
                     }
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num"
                   />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    สามารถกำหนดหรือแก้ไขจำนวนเงินประกันสัญญาได้อิสระตามต้องการ
+                  </p>
                 </div>
               </div>
 

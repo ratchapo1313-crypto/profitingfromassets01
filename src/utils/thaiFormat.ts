@@ -125,3 +125,93 @@ export function buildDurationLabel(years: number, months: number, days: number):
   if (days > 0) parts.push(`${days} วัน`);
   return parts.length > 0 ? parts.join(' ') : '1 ปี';
 }
+
+export interface ContractExpiryInfo {
+  status: 'expired' | 'critical' | 'warning' | 'normal';
+  daysLeft: number;
+  label: string;
+  badgeClass: string;
+  iconType: 'expired' | 'critical' | 'warning' | 'normal';
+}
+
+/**
+ * Calculates days remaining until lease contract end date and returns alert info.
+ * - expired: daysLeft < 0
+ * - critical: 0 <= daysLeft <= 30 (expires within 30 days)
+ * - warning: 31 <= daysLeft <= 60 (expires within 60 days)
+ * - normal: daysLeft > 60
+ */
+export function getContractExpiryInfo(endDateStr: string): ContractExpiryInfo {
+  if (!endDateStr) {
+    return {
+      status: 'normal',
+      daysLeft: 9999,
+      label: 'ปกติ',
+      badgeClass: 'bg-slate-50 text-slate-600 border-slate-200',
+      iconType: 'normal'
+    };
+  }
+
+  const parts = endDateStr.split('-');
+  if (parts.length < 3) {
+    return {
+      status: 'normal',
+      daysLeft: 9999,
+      label: 'ปกติ',
+      badgeClass: 'bg-slate-50 text-slate-600 border-slate-200',
+      iconType: 'normal'
+    };
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const end = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+  end.setHours(0, 0, 0, 0);
+
+  const diffTime = end.getTime() - today.getTime();
+  const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (daysLeft < 0) {
+    return {
+      status: 'expired',
+      daysLeft,
+      label: `หมดสัญญาแล้ว (เกิน ${Math.abs(daysLeft)} วัน)`,
+      badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+      iconType: 'expired'
+    };
+  } else if (daysLeft === 0) {
+    return {
+      status: 'critical',
+      daysLeft,
+      label: 'สิ้นสุดสัญญาวันนี้',
+      badgeClass: 'bg-rose-100 text-rose-800 border-rose-300 font-bold',
+      iconType: 'critical'
+    };
+  } else if (daysLeft <= 30) {
+    return {
+      status: 'critical',
+      daysLeft,
+      label: `ใกล้สิ้นสุด (เหลือ ${daysLeft} วัน)`,
+      badgeClass: 'bg-amber-100 text-amber-900 border-amber-300 font-semibold',
+      iconType: 'critical'
+    };
+  } else if (daysLeft <= 60) {
+    return {
+      status: 'warning',
+      daysLeft,
+      label: `ใกล้สิ้นสุด (เหลือ ${daysLeft} วัน)`,
+      badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
+      iconType: 'warning'
+    };
+  } else {
+    return {
+      status: 'normal',
+      daysLeft,
+      label: 'ปกติ',
+      badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      iconType: 'normal'
+    };
+  }
+}
+
