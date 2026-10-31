@@ -6,7 +6,16 @@ import {
   DailyRevenue
 } from '../types.ts';
 import { initialDatabase } from '../data/initialData.ts';
-import { doc, getDoc, setDoc, deleteDoc, writeBatch, onSnapshot } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  writeBatch,
+  onSnapshot,
+  collection,
+  getDocs
+} from 'firebase/firestore';
 import { firestore, firestoreDatabaseId, handleFirestoreError, OperationType, testConnection } from '../firebase.ts';
 
 interface DataContextType {
@@ -143,7 +152,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Initialize Firebase connection and live real-time synchronization
   useEffect(() => {
     let isMounted = true;
-    let unsubscribeFirestore: (() => void) | null = null;
+    let unsubscribeMainDoc: (() => void) | null = null;
+    let unsubscribeContracts: (() => void) | null = null;
 
     const setupFirebase = async () => {
       try {
@@ -151,21 +161,67 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await testConnection();
 
         const mainDocRef = doc(firestore, 'app_state', 'main');
+        const contractsColRef = collection(firestore, 'contracts');
 
-        // Check if database exists in Cloud Firestore; if not, initialize with seed
+        // Check and seed contracts collection if empty (covers both night & fresh market)
+        try {
+          const contractsSnap = await getDocs(contractsColRef);
+          if (contractsSnap.empty) {
+            // Seed all initial contracts (8 night market + 8 fresh market)
+            const batch = writeBatch(firestore);
+            for (const contract of initialDatabase.contracts) {
+              const cRef = doc(firestore, 'contracts', contract.id);
+              batch.set(cRef, cleanForFirestore(contract));
+            }
+            await batch.commit();
+          } else {
+            // If contracts exist in Firestore, populate local state with remote docs
+            const remoteContracts = contractsSnap.docs.map((d) => d.data() as MarketLeaseContract);
+            remoteContracts.sort((a, b) => {
+              if (a.marketType !== b.marketType) {
+                return a.marketType === 'night' ? -1 : 1;
+              }
+              return (a.order || 0) - (b.order || 0);
+            });
+            if (isMounted) {
+              setDb((prevDb) => {
+                const nextDb = {
+                  ...prevDb,
+                  contracts: remoteContracts,
+                  lastUpdated: new Date().toISOString()
+                };
+                saveLocalData(nextDb);
+                return nextDb;
+              });
+              setIsFirebaseConnected(true);
+              setIsOnline(true);
+            }
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, 'contracts');
+        }
+
+        // Check if main database document exists in Cloud Firestore; if not, initialize with seed
         try {
           const snap = await getDoc(mainDocRef);
           if (snap.exists()) {
             if (isMounted) {
               const cloudData = { ...initialDatabase, ...snap.data() } as AppDatabase;
-              setDb(cloudData);
-              saveLocalData(cloudData);
+              setDb((prevDb) => {
+                const nextDb: AppDatabase = {
+                  ...cloudData,
+                  // Keep the most comprehensive contracts
+                  contracts: prevDb.contracts.length > 0 ? prevDb.contracts : (cloudData.contracts || initialDatabase.contracts)
+                };
+                saveLocalData(nextDb);
+                return nextDb;
+              });
               setIsFirebaseConnected(true);
               setIsOnline(true);
               setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
             }
           } else {
-            // First time seed to Firestore
+            // First time seed to Firestore main document
             await setDoc(mainDocRef, cleanForFirestore(initialDatabase));
             if (isMounted) {
               setIsFirebaseConnected(true);
@@ -176,15 +232,55 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           handleFirestoreError(err, OperationType.GET, FIRESTORE_DOC_PATH);
         }
 
-        // Live Real-Time Listener: all tabs and devices get instant updates from Firebase
-        unsubscribeFirestore = onSnapshot(
+        // Live Real-Time Listener 1: contracts collection (auto-sync for night market & fresh market)
+        unsubscribeContracts = onSnapshot(
+          contractsColRef,
+          (snapshot) => {
+            if (!isMounted) return;
+            if (!snapshot.empty) {
+              const liveContracts = snapshot.docs.map((d) => d.data() as MarketLeaseContract);
+              liveContracts.sort((a, b) => {
+                if (a.marketType !== b.marketType) {
+                  return a.marketType === 'night' ? -1 : 1;
+                }
+                return (a.order || 0) - (b.order || 0);
+              });
+              setDb((prevDb) => {
+                const nextDb: AppDatabase = {
+                  ...prevDb,
+                  contracts: liveContracts,
+                  lastUpdated: new Date().toISOString()
+                };
+                saveLocalData(nextDb);
+                return nextDb;
+              });
+              setIsFirebaseConnected(true);
+              setIsOnline(true);
+              setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
+            }
+          },
+          (err) => {
+            handleFirestoreError(err, OperationType.GET, 'contracts');
+            if (isMounted) setIsFirebaseConnected(false);
+          }
+        );
+
+        // Live Real-Time Listener 2: app_state/main for stall counts, daily revenues, memo approval
+        unsubscribeMainDoc = onSnapshot(
           mainDocRef,
           (docSnap) => {
             if (!isMounted) return;
             if (docSnap.exists()) {
-              const cloudData = { ...initialDatabase, ...docSnap.data() } as AppDatabase;
-              setDb(cloudData);
-              saveLocalData(cloudData);
+              const cloudData = docSnap.data() as Partial<AppDatabase>;
+              setDb((prevDb) => {
+                const nextDb: AppDatabase = {
+                  ...prevDb,
+                  ...cloudData,
+                  contracts: prevDb.contracts.length > 0 ? prevDb.contracts : (cloudData.contracts || prevDb.contracts)
+                };
+                saveLocalData(nextDb);
+                return nextDb;
+              });
               setIsFirebaseConnected(true);
               setIsOnline(true);
               setLastSyncedAt(new Date().toLocaleTimeString('th-TH'));
@@ -228,7 +324,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
-      if (unsubscribeFirestore) unsubscribeFirestore();
+      if (unsubscribeContracts) unsubscribeContracts();
+      if (unsubscribeMainDoc) unsubscribeMainDoc();
       if (eventSource) eventSource.close();
     };
   }, []);
@@ -490,6 +587,26 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (target === 'night') newDb.nightMarketConfig.totalStalls = totalStalls;
         if (target === 'fresh') newDb.freshMarketConfig.totalStalls = totalStalls;
       }
+
+      // Sync imported contracts to Firestore 'contracts' collection
+      try {
+        const batch = writeBatch(firestore);
+        if (mode === 'replace') {
+          const toRemove = dbRef.current.contracts.filter((c) => c.marketType === target);
+          for (const c of toRemove) {
+            batch.delete(doc(firestore, 'contracts', c.id));
+          }
+        }
+        for (const item of items) {
+          if (item && item.id) {
+            const ref = doc(firestore, 'contracts', item.id);
+            batch.set(ref, cleanForFirestore(item), { merge: true });
+          }
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'contracts');
+      }
     } else {
       if (mode === 'replace') {
         newDb.dailyRevenues = items;
@@ -501,7 +618,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDb(newDb);
     saveLocalData(newDb);
 
-    // Save directly to Firebase Cloud Firestore
+    // Save directly to Firebase Cloud Firestore main document
     await syncToCloud(newDb);
 
     try {
@@ -523,6 +640,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDb(initialDatabase);
     saveLocalData(initialDatabase);
     await syncToCloud(initialDatabase);
+
+    // Reset contracts collection in Cloud Firestore
+    try {
+      const batch = writeBatch(firestore);
+      for (const contract of initialDatabase.contracts) {
+        const contractRef = doc(firestore, 'contracts', contract.id);
+        batch.set(contractRef, cleanForFirestore(contract));
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'contracts');
+    }
+
     try {
       await fetch('/api/reset', { method: 'POST' });
     } catch {
