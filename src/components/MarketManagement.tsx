@@ -38,6 +38,38 @@ import {
 import { downloadCategoryExcel, downloadTemplateExcel } from '../utils/excelHelper.ts';
 import { getSystemMetrics } from '../utils/marketMetrics.ts';
 
+// Helper to parse YYYY-MM-DD into day, month, and year (พ.ศ.) for normal numeric inputs
+function parseDateParts(dateStr: string) {
+  if (!dateStr) return { day: '1', month: '10', yearBE: '2569' };
+  const parts = dateStr.split('-');
+  if (parts.length >= 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const d = parseInt(parts[2], 10);
+    return {
+      day: isNaN(d) ? '1' : String(d),
+      month: isNaN(m) ? '10' : String(m),
+      yearBE: isNaN(y) ? '2569' : String(y > 2400 ? y : y + 543)
+    };
+  }
+  return { day: '1', month: '10', yearBE: '2569' };
+}
+
+// Helper to convert day, month, and Buddhist Era year (พ.ศ.) into standard YYYY-MM-DD
+function assembleISODate(dVal: string | number, mVal: string | number, yBEVal: string | number): string {
+  const d = parseInt(String(dVal), 10);
+  const m = parseInt(String(mVal), 10);
+  let y = parseInt(String(yBEVal), 10);
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return '';
+  if (y > 2400) {
+    y = y - 543;
+  }
+  const yyyy = String(y).padStart(4, '0');
+  const mm = String(Math.min(12, Math.max(1, m))).padStart(2, '0');
+  const dd = String(Math.min(31, Math.max(1, d))).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 interface MarketManagementProps {
   marketType: MarketType;
 }
@@ -194,6 +226,16 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     notes: ''
   });
 
+  // Separate numeric inputs for start date (day, month, year BE)
+  const [startDay, setStartDay] = useState<string | number>(1);
+  const [startMonth, setStartMonth] = useState<string | number>(10);
+  const [startYearBE, setStartYearBE] = useState<string | number>(2569);
+
+  // Separate numeric inputs for end date (day, month, year BE)
+  const [endDay, setEndDay] = useState<string | number>(30);
+  const [endMonth, setEndMonth] = useState<string | number>(9);
+  const [endYearBE, setEndYearBE] = useState<string | number>(2570);
+
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -211,16 +253,28 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     const contractPrefix = isNight ? 'สช. ' : 'สช. ';
     const numPad = String(nextOrder).padStart(3, '0');
 
+    const sDate = '2026-10-01';
+    const eDate = calculateEndDate('2026-10-01', 1, 0, 0); // 2027-09-30
+    const sParts = parseDateParts(sDate);
+    const eParts = parseDateParts(eDate);
+
+    setStartDay(sParts.day);
+    setStartMonth(sParts.month);
+    setStartYearBE(sParts.yearBE);
+    setEndDay(eParts.day);
+    setEndMonth(eParts.month);
+    setEndYearBE(eParts.yearBE);
+
     setEditingContract(null);
     setFormData({
       assetName: isNight ? `แผงค้า ${prefix}-${String(nextOrder).padStart(2, '0')}` : `แผงค้า สด-${String(nextOrder).padStart(2, '0')}`,
       contractNo: `${contractPrefix}${numPad}/2570`,
       tenantName: '',
-      startDate: '2026-10-01',
+      startDate: sDate,
       durationYears: 1,
       durationMonths: 0,
       durationDays: 0,
-      endDate: calculateEndDate('2026-10-01', 1, 0, 0),
+      endDate: eDate,
       transactionFee: isNight ? 500 : 400,
       monthlyRent: isNight ? 2500 : 1800,
       securityDeposit: isNight ? 5000 : 3600,
@@ -231,6 +285,17 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
 
   const openEditModal = (c: MarketLeaseContract) => {
     setEditingContract(c);
+    const sParts = parseDateParts(c.startDate);
+    const eDate = c.endDate || calculateEndDate(c.startDate, c.durationYears ?? 1, c.durationMonths ?? 0, c.durationDays ?? 0);
+    const eParts = parseDateParts(eDate);
+
+    setStartDay(sParts.day);
+    setStartMonth(sParts.month);
+    setStartYearBE(sParts.yearBE);
+    setEndDay(eParts.day);
+    setEndMonth(eParts.month);
+    setEndYearBE(eParts.yearBE);
+
     setFormData({
       assetName: c.assetName,
       contractNo: c.contractNo,
@@ -239,7 +304,7 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
       durationYears: c.durationYears ?? 1,
       durationMonths: c.durationMonths ?? 0,
       durationDays: c.durationDays ?? 0,
-      endDate: c.endDate || calculateEndDate(c.startDate, c.durationYears ?? 1, c.durationMonths ?? 0, c.durationDays ?? 0),
+      endDate: eDate,
       transactionFee: c.transactionFee,
       monthlyRent: c.monthlyRent,
       securityDeposit: c.securityDeposit,
@@ -248,26 +313,77 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     setIsModalOpen(true);
   };
 
-  // Recalculate end date whenever start date or duration changes
-  const updateDates = (startDate: string, y: number, m: number, d: number) => {
-    const calculated = calculateEndDate(startDate, y, m, d);
+  // Change handler for Start Date parts (day, month, year BE)
+  const handleStartDatePartChange = (d: string | number, m: string | number, yBE: string | number) => {
+    setStartDay(d);
+    setStartMonth(m);
+    setStartYearBE(yBE);
+    const isoStart = assembleISODate(d, m, yBE);
+    if (isoStart) {
+      const calcEnd = calculateEndDate(isoStart, formData.durationYears, formData.durationMonths, formData.durationDays);
+      const eParts = parseDateParts(calcEnd);
+      setEndDay(eParts.day);
+      setEndMonth(eParts.month);
+      setEndYearBE(eParts.yearBE);
+      setFormData((prev) => ({
+        ...prev,
+        startDate: isoStart,
+        endDate: calcEnd
+      }));
+    }
+  };
+
+  // Change handler for Duration (years, months, days)
+  const handleDurationPartChange = (years: number, months: number, days: number) => {
+    const isoStart = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
+    const calcEnd = calculateEndDate(isoStart, years, months, days);
+    const eParts = parseDateParts(calcEnd);
+    setEndDay(eParts.day);
+    setEndMonth(eParts.month);
+    setEndYearBE(eParts.yearBE);
     setFormData((prev) => ({
       ...prev,
-      startDate,
-      durationYears: y,
-      durationMonths: m,
-      durationDays: d,
-      endDate: calculated
+      durationYears: years,
+      durationMonths: months,
+      durationDays: days,
+      endDate: calcEnd
     }));
   };
 
-  const handleShortcutDuration = (years: number, months: number) => {
-    updateDates(formData.startDate, years, months, 0);
+  // Change handler for End Date parts (day, month, year BE) - Direct user editing!
+  const handleEndDatePartChange = (d: string | number, m: string | number, yBE: string | number) => {
+    setEndDay(d);
+    setEndMonth(m);
+    setEndYearBE(yBE);
+    const isoEnd = assembleISODate(d, m, yBE);
+    if (isoEnd) {
+      setFormData((prev) => ({
+        ...prev,
+        endDate: isoEnd
+      }));
+    }
+  };
+
+  // Recalculate end date automatically based on start date and duration
+  const handleRecalculateEndDate = () => {
+    const isoStart = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
+    const calcEnd = calculateEndDate(isoStart, formData.durationYears, formData.durationMonths, formData.durationDays);
+    const eParts = parseDateParts(calcEnd);
+    setEndDay(eParts.day);
+    setEndMonth(eParts.month);
+    setEndYearBE(eParts.yearBE);
+    setFormData((prev) => ({
+      ...prev,
+      endDate: calcEnd
+    }));
   };
 
   const handleSaveContract = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.assetName || !formData.contractNo) return;
+
+    const finalStartDate = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
+    const finalEndDate = assembleISODate(endDay, endMonth, endYearBE) || formData.endDate;
 
     const durationLabel = buildDurationLabel(
       formData.durationYears,
@@ -280,12 +396,12 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
         assetName: formData.assetName,
         contractNo: formData.contractNo,
         tenantName: formData.tenantName,
-        startDate: formData.startDate,
+        startDate: finalStartDate,
         duration: durationLabel,
         durationYears: formData.durationYears,
         durationMonths: formData.durationMonths,
         durationDays: formData.durationDays,
-        endDate: formData.endDate,
+        endDate: finalEndDate,
         transactionFee: Number(formData.transactionFee) || 0,
         monthlyRent: Number(formData.monthlyRent) || 0,
         securityDeposit: Number(formData.securityDeposit) || 0,
@@ -300,12 +416,12 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
         assetName: formData.assetName,
         contractNo: formData.contractNo,
         tenantName: formData.tenantName,
-        startDate: formData.startDate,
+        startDate: finalStartDate,
         duration: durationLabel,
         durationYears: formData.durationYears,
         durationMonths: formData.durationMonths,
         durationDays: formData.durationDays,
-        endDate: formData.endDate,
+        endDate: finalEndDate,
         transactionFee: Number(formData.transactionFee) || 0,
         monthlyRent: Number(formData.monthlyRent) || 0,
         securityDeposit: Number(formData.securityDeposit) || 0,
@@ -1089,169 +1205,208 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                 />
               </div>
 
-              {/* วันที่เริ่มสัญญา & กำหนดระยะเวลาการเช่า */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
-                <div className="flex items-center gap-1.5 font-semibold text-slate-800">
-                  <Calendar className="w-4 h-4 text-slate-600" />
-                  <span>ระยะเวลาและวันที่สิ้นสุดสัญญา (คำนวณอัตโนมัติ)</span>
+              {/* 4. วันที่เริ่มสัญญา, 5. กำหนดระยะเวลาการเช่า, 6. วันที่สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ) */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <div className="flex items-center gap-2 font-bold text-slate-800">
+                    <Calendar className="w-4 h-4 text-indigo-600" />
+                    <span>ระยะเวลาและวันเริ่มต้น-สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ)</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-medium bg-white px-2 py-0.5 rounded border border-slate-200">
+                    กรอกตัวเลข วัน / เดือน / ปี พ.ศ.
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-medium text-slate-600 mb-1">
-                      4. วันที่เริ่มสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="date"
-                      required
-                      value={formData.startDate}
-                      onChange={(e) =>
-                        updateDates(
-                          e.target.value,
-                          formData.durationYears,
-                          formData.durationMonths,
-                          formData.durationDays
-                        )
-                      }
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-md font-mono-num"
-                    />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* 4. วันที่เริ่มสัญญา (ช่องกรอกตัวเลขปกติ) */}
+                  <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block font-bold text-slate-800 text-xs">
+                        4. วันที่เริ่มสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
+                      </label>
+                      <span className="text-[10px] text-slate-400 font-mono-num">
+                        {formData.startDate}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">วัน (1-31):</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          required
+                          placeholder="เช่น 1"
+                          value={startDay}
+                          onChange={(e) => handleStartDatePartChange(e.target.value, startMonth, startYearBE)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">เดือน (1-12):</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="12"
+                          required
+                          placeholder="เช่น 10"
+                          value={startMonth}
+                          onChange={(e) => handleStartDatePartChange(startDay, e.target.value, startYearBE)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">ปี (พ.ศ.):</span>
+                        <input
+                          type="number"
+                          required
+                          placeholder="เช่น 2569"
+                          value={startYearBE}
+                          onChange={(e) => handleStartDatePartChange(startDay, startMonth, e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-600 bg-slate-50 px-2 py-1 rounded border border-slate-100 flex items-center justify-between">
+                      <span>เริ่ม: <strong className="text-slate-900">{formatThaiDate(formData.startDate)}</strong></span>
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="block font-medium text-slate-600 mb-1">
-                      6. วันที่สิ้นสุดสัญญา (คำนวณอัตโนมัติ)
+                  {/* 6. วันที่สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ) */}
+                  <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block font-bold text-slate-800 text-xs">
+                        6. วันที่สิ้นสุดสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleRecalculateEndDate}
+                        className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline flex items-center gap-0.5"
+                        title="คำนวณวันสิ้นสุดใหม่อัตโนมัติจากวันเริ่มและระยะเวลาเช่า"
+                      >
+                        ↺ คำนวณอัตโนมัติ
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">วัน (1-31):</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          required
+                          placeholder="เช่น 30"
+                          value={endDay}
+                          onChange={(e) => handleEndDatePartChange(e.target.value, endMonth, endYearBE)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">เดือน (1-12):</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="12"
+                          required
+                          placeholder="เช่น 9"
+                          value={endMonth}
+                          onChange={(e) => handleEndDatePartChange(endDay, e.target.value, endYearBE)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">ปี (พ.ศ.):</span>
+                        <input
+                          type="number"
+                          required
+                          placeholder="เช่น 2570"
+                          value={endYearBE}
+                          onChange={(e) => handleEndDatePartChange(endDay, endMonth, e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-600 bg-slate-50 px-2 py-1 rounded border border-slate-100 flex items-center justify-between">
+                      <span>สิ้นสุด: <strong className="text-slate-900">{formatThaiDate(formData.endDate)}</strong></span>
+                      <span className="text-[10px] text-slate-400 font-mono-num">({formData.endDate})</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. กำหนดระยะเวลาการเช่า (ช่องกรอกตัวเลขปกติ) */}
+                <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <label className="block font-bold text-slate-800 text-xs">
+                      5. กำหนดระยะเวลาการเช่า (ช่องกรอกตัวเลขปกติ: ปี / เดือน / วัน)
                     </label>
-                    <input
-                      type="date"
-                      readOnly
-                      value={formData.endDate}
-                      className="w-full px-3 py-1.5 bg-slate-100 border border-slate-300 rounded-md font-mono-num font-semibold text-slate-900 cursor-not-allowed"
-                    />
-                    <span className="text-[10px] text-slate-500 mt-0.5 block">
-                      = {formatThaiDate(formData.endDate)}
+                    <span className="text-[11px] text-slate-600">
+                      ระยะเวลารวม: <strong className="text-indigo-700">{buildDurationLabel(formData.durationYears, formData.durationMonths, formData.durationDays) || 'ไม่ได้ระบุ'}</strong>
                     </span>
-                  </div>
-                </div>
-
-                {/* 5. กำหนดระยะเวลาการเช่า: ปุ่มลัด & inputs */}
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block font-medium text-slate-600">
-                      5. กำหนดระยะเวลาการเช่า (ปุ่มลัดเลือกด่วน):
-                    </label>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    <button
-                      type="button"
-                      onClick={() => handleShortcutDuration(0, 3)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer border ${
-                        formData.durationYears === 0 && formData.durationMonths === 3
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      3 เดือน
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleShortcutDuration(0, 6)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer border ${
-                        formData.durationYears === 0 && formData.durationMonths === 6
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      6 เดือน
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleShortcutDuration(1, 0)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer border ${
-                        formData.durationYears === 1 && formData.durationMonths === 0
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      1 ปี
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleShortcutDuration(2, 0)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer border ${
-                        formData.durationYears === 2 && formData.durationMonths === 0
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      2 ปี
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleShortcutDuration(3, 0)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer border ${
-                        formData.durationYears === 3 && formData.durationMonths === 0
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      3 ปี
-                    </button>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <span className="text-[10px] text-slate-500">จำนวนปี:</span>
+                      <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">จำนวนปี:</span>
                       <input
                         type="number"
                         min="0"
+                        placeholder="0"
                         value={formData.durationYears}
-                        onChange={(e) =>
-                          updateDates(
-                            formData.startDate,
-                            parseInt(e.target.value, 10) || 0,
-                            formData.durationMonths,
-                            formData.durationDays
-                          )
-                        }
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono-num text-center"
+                        onChange={(e) => handleDurationPartChange(parseInt(e.target.value, 10) || 0, formData.durationMonths, formData.durationDays)}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500">จำนวนเดือน:</span>
+                      <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">จำนวนเดือน:</span>
                       <input
                         type="number"
                         min="0"
-                        max="11"
+                        placeholder="0"
                         value={formData.durationMonths}
-                        onChange={(e) =>
-                          updateDates(
-                            formData.startDate,
-                            formData.durationYears,
-                            parseInt(e.target.value, 10) || 0,
-                            formData.durationDays
-                          )
-                        }
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono-num text-center"
+                        onChange={(e) => handleDurationPartChange(formData.durationYears, parseInt(e.target.value, 10) || 0, formData.durationDays)}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500">จำนวนวัน:</span>
+                      <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">จำนวนวัน:</span>
                       <input
                         type="number"
                         min="0"
-                        max="30"
+                        placeholder="0"
                         value={formData.durationDays}
-                        onChange={(e) =>
-                          updateDates(
-                            formData.startDate,
-                            formData.durationYears,
-                            formData.durationMonths,
-                            parseInt(e.target.value, 10) || 0
-                          )
-                        }
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono-num text-center"
+                        onChange={(e) => handleDurationPartChange(formData.durationYears, formData.durationMonths, parseInt(e.target.value, 10) || 0)}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
+                  </div>
+
+                  {/* ปุ่มลัดเลือกด่วนเพิ่มเติม */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-slate-100">
+                    <span className="text-[10px] text-slate-400 font-medium">ปุ่มเลือกด่วน:</span>
+                    {[
+                      { y: 0, m: 3, label: '3 เดือน' },
+                      { y: 0, m: 6, label: '6 เดือน' },
+                      { y: 1, m: 0, label: '1 ปี' },
+                      { y: 2, m: 0, label: '2 ปี' },
+                      { y: 3, m: 0, label: '3 ปี' }
+                    ].map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => handleDurationPartChange(item.y, item.m, 0)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium cursor-pointer border transition-colors ${
+                          formData.durationYears === item.y && formData.durationMonths === item.m && formData.durationDays === 0
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
