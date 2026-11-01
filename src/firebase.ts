@@ -3,9 +3,12 @@ import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-/* CRITICAL: Must specify firebaseConfig.firestoreDatabaseId for named Firestore database */
-export const firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId;
+/* CRITICAL: Must specify firebaseConfig.firestoreDatabaseId for named Firestore database, or default database if '(default)' */
+export const firestore =
+  !firebaseConfig.firestoreDatabaseId || firebaseConfig.firestoreDatabaseId === '(default)'
+    ? getFirestore(app)
+    : getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 export { firebaseConfig };
 
 export enum OperationType {
