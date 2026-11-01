@@ -38,36 +38,81 @@ import {
 import { downloadCategoryExcel, downloadTemplateExcel } from '../utils/excelHelper.ts';
 import { getSystemMetrics } from '../utils/marketMetrics.ts';
 
-// Helper to parse YYYY-MM-DD into day, month, and year (พ.ศ.) for normal numeric inputs
-function parseDateParts(dateStr: string) {
-  if (!dateStr) return { day: '1', month: '10', yearBE: '2569' };
-  const parts = dateStr.split('-');
-  if (parts.length >= 3) {
+// Parse Thai date string (DD/MM/YYYY พ.ศ. or ค.ศ.) or 8-digit number string or ISO date into ISO YYYY-MM-DD
+function parseThaiDateToISO(input: string): string {
+  if (!input) return '';
+  const clean = input.trim();
+
+  // If already standard ISO YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    const y = parseInt(clean.substring(0, 4), 10);
+    if (y > 2400) {
+      return `${y - 543}-${clean.substring(5, 7)}-${clean.substring(8, 10)}`;
+    }
+    return clean;
+  }
+
+  // Handle DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const parts = clean.split(/[\/\-.]/);
+  if (parts.length === 3) {
+    let d: number, m: number, y: number;
+    if (parts[0].length === 4) {
+      y = parseInt(parts[0], 10);
+      m = parseInt(parts[1], 10);
+      d = parseInt(parts[2], 10);
+    } else {
+      d = parseInt(parts[0], 10);
+      m = parseInt(parts[1], 10);
+      y = parseInt(parts[2], 10);
+    }
+    if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+      if (y > 2400) y = y - 543;
+      const yyyy = String(y).padStart(4, '0');
+      const mm = String(Math.min(12, Math.max(1, m))).padStart(2, '0');
+      const dd = String(Math.min(31, Math.max(1, d))).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  // Handle 8-digit continuous number string e.g. "01102569"
+  const digitsOnly = clean.replace(/\D/g, '');
+  if (digitsOnly.length === 8) {
+    const d = parseInt(digitsOnly.substring(0, 2), 10);
+    const m = parseInt(digitsOnly.substring(2, 4), 10);
+    let y = parseInt(digitsOnly.substring(4, 8), 10);
+    if (y > 2400) y = y - 543;
+    const yyyy = String(y).padStart(4, '0');
+    const mm = String(Math.min(12, Math.max(1, m))).padStart(2, '0');
+    const dd = String(Math.min(31, Math.max(1, d))).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return clean;
+}
+
+// Convert ISO date YYYY-MM-DD to display string DD/MM/YYYY in Buddhist Era (พ.ศ.)
+function formatISOToThaiInput(isoStr: string): string {
+  if (!isoStr) return '';
+  const parts = isoStr.split('-');
+  if (parts.length === 3) {
     const y = parseInt(parts[0], 10);
     const m = parseInt(parts[1], 10);
     const d = parseInt(parts[2], 10);
-    return {
-      day: isNaN(d) ? '1' : String(d),
-      month: isNaN(m) ? '10' : String(m),
-      yearBE: isNaN(y) ? '2569' : String(y > 2400 ? y : y + 543)
-    };
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+      const yBE = y > 2400 ? y : y + 543;
+      return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${yBE}`;
+    }
   }
-  return { day: '1', month: '10', yearBE: '2569' };
+  return isoStr;
 }
 
-// Helper to convert day, month, and Buddhist Era year (พ.ศ.) into standard YYYY-MM-DD
-function assembleISODate(dVal: string | number, mVal: string | number, yBEVal: string | number): string {
-  const d = parseInt(String(dVal), 10);
-  const m = parseInt(String(mVal), 10);
-  let y = parseInt(String(yBEVal), 10);
-  if (isNaN(d) || isNaN(m) || isNaN(y)) return '';
-  if (y > 2400) {
-    y = y - 543;
+// Auto-format 8-digit numeric input to DD/MM/YYYY
+function autoFormatDateInput(val: string): string {
+  const digits = val.replace(/\D/g, '');
+  if (digits.length === 8 && !val.includes('/')) {
+    return `${digits.substring(0, 2)}/${digits.substring(2, 4)}/${digits.substring(4, 8)}`;
   }
-  const yyyy = String(y).padStart(4, '0');
-  const mm = String(Math.min(12, Math.max(1, m))).padStart(2, '0');
-  const dd = String(Math.min(31, Math.max(1, d))).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  return val;
 }
 
 interface MarketManagementProps {
@@ -226,15 +271,9 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     notes: ''
   });
 
-  // Separate numeric inputs for start date (day, month, year BE)
-  const [startDay, setStartDay] = useState<string | number>(1);
-  const [startMonth, setStartMonth] = useState<string | number>(10);
-  const [startYearBE, setStartYearBE] = useState<string | number>(2569);
-
-  // Separate numeric inputs for end date (day, month, year BE)
-  const [endDay, setEndDay] = useState<string | number>(30);
-  const [endMonth, setEndMonth] = useState<string | number>(9);
-  const [endYearBE, setEndYearBE] = useState<string | number>(2570);
+  // Single input boxes for dates (วว/ดด/ปปปป)
+  const [startDateInput, setStartDateInput] = useState<string>('01/10/2569');
+  const [endDateInput, setEndDateInput] = useState<string>('30/09/2570');
 
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -255,15 +294,8 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
 
     const sDate = '2026-10-01';
     const eDate = calculateEndDate('2026-10-01', 1, 0, 0); // 2027-09-30
-    const sParts = parseDateParts(sDate);
-    const eParts = parseDateParts(eDate);
-
-    setStartDay(sParts.day);
-    setStartMonth(sParts.month);
-    setStartYearBE(sParts.yearBE);
-    setEndDay(eParts.day);
-    setEndMonth(eParts.month);
-    setEndYearBE(eParts.yearBE);
+    setStartDateInput(formatISOToThaiInput(sDate)); // '01/10/2569'
+    setEndDateInput(formatISOToThaiInput(eDate));   // '30/09/2570'
 
     setEditingContract(null);
     setFormData({
@@ -285,16 +317,9 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
 
   const openEditModal = (c: MarketLeaseContract) => {
     setEditingContract(c);
-    const sParts = parseDateParts(c.startDate);
     const eDate = c.endDate || calculateEndDate(c.startDate, c.durationYears ?? 1, c.durationMonths ?? 0, c.durationDays ?? 0);
-    const eParts = parseDateParts(eDate);
-
-    setStartDay(sParts.day);
-    setStartMonth(sParts.month);
-    setStartYearBE(sParts.yearBE);
-    setEndDay(eParts.day);
-    setEndMonth(eParts.month);
-    setEndYearBE(eParts.yearBE);
+    setStartDateInput(formatISOToThaiInput(c.startDate));
+    setEndDateInput(formatISOToThaiInput(eDate));
 
     setFormData({
       assetName: c.assetName,
@@ -313,18 +338,14 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     setIsModalOpen(true);
   };
 
-  // Change handler for Start Date parts (day, month, year BE)
-  const handleStartDatePartChange = (d: string | number, m: string | number, yBE: string | number) => {
-    setStartDay(d);
-    setStartMonth(m);
-    setStartYearBE(yBE);
-    const isoStart = assembleISODate(d, m, yBE);
-    if (isoStart) {
+  // 4. Handle Start Date input changes (single normal numeric box)
+  const handleStartDateChange = (val: string) => {
+    const formatted = autoFormatDateInput(val);
+    setStartDateInput(formatted);
+    const isoStart = parseThaiDateToISO(formatted);
+    if (isoStart && isoStart.length === 10) {
       const calcEnd = calculateEndDate(isoStart, formData.durationYears, formData.durationMonths, formData.durationDays);
-      const eParts = parseDateParts(calcEnd);
-      setEndDay(eParts.day);
-      setEndMonth(eParts.month);
-      setEndYearBE(eParts.yearBE);
+      setEndDateInput(formatISOToThaiInput(calcEnd));
       setFormData((prev) => ({
         ...prev,
         startDate: isoStart,
@@ -333,14 +354,11 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     }
   };
 
-  // Change handler for Duration (years, months, days)
-  const handleDurationPartChange = (years: number, months: number, days: number) => {
-    const isoStart = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
+  // 5. Handle Duration numeric input changes (normal numeric boxes)
+  const handleDurationChange = (years: number, months: number, days: number = 0) => {
+    const isoStart = parseThaiDateToISO(startDateInput) || formData.startDate;
     const calcEnd = calculateEndDate(isoStart, years, months, days);
-    const eParts = parseDateParts(calcEnd);
-    setEndDay(eParts.day);
-    setEndMonth(eParts.month);
-    setEndYearBE(eParts.yearBE);
+    setEndDateInput(formatISOToThaiInput(calcEnd));
     setFormData((prev) => ({
       ...prev,
       durationYears: years,
@@ -350,13 +368,12 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     }));
   };
 
-  // Change handler for End Date parts (day, month, year BE) - Direct user editing!
-  const handleEndDatePartChange = (d: string | number, m: string | number, yBE: string | number) => {
-    setEndDay(d);
-    setEndMonth(m);
-    setEndYearBE(yBE);
-    const isoEnd = assembleISODate(d, m, yBE);
-    if (isoEnd) {
+  // 6. Handle End Date input changes (single normal numeric box)
+  const handleEndDateChange = (val: string) => {
+    const formatted = autoFormatDateInput(val);
+    setEndDateInput(formatted);
+    const isoEnd = parseThaiDateToISO(formatted);
+    if (isoEnd && isoEnd.length === 10) {
       setFormData((prev) => ({
         ...prev,
         endDate: isoEnd
@@ -366,12 +383,9 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
 
   // Recalculate end date automatically based on start date and duration
   const handleRecalculateEndDate = () => {
-    const isoStart = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
+    const isoStart = parseThaiDateToISO(startDateInput) || formData.startDate;
     const calcEnd = calculateEndDate(isoStart, formData.durationYears, formData.durationMonths, formData.durationDays);
-    const eParts = parseDateParts(calcEnd);
-    setEndDay(eParts.day);
-    setEndMonth(eParts.month);
-    setEndYearBE(eParts.yearBE);
+    setEndDateInput(formatISOToThaiInput(calcEnd));
     setFormData((prev) => ({
       ...prev,
       endDate: calcEnd
@@ -382,8 +396,8 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
     e.preventDefault();
     if (!formData.assetName || !formData.contractNo) return;
 
-    const finalStartDate = assembleISODate(startDay, startMonth, startYearBE) || formData.startDate;
-    const finalEndDate = assembleISODate(endDay, endMonth, endYearBE) || formData.endDate;
+    const finalStartDate = parseThaiDateToISO(startDateInput) || formData.startDate;
+    const finalEndDate = parseThaiDateToISO(endDateInput) || formData.endDate;
 
     const durationLabel = buildDurationLabel(
       formData.durationYears,
@@ -1206,158 +1220,90 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
               </div>
 
               {/* 4. วันที่เริ่มสัญญา, 5. กำหนดระยะเวลาการเช่า, 6. วันที่สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ) */}
-              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
-                  <div className="flex items-center gap-2 font-bold text-slate-800">
-                    <Calendar className="w-4 h-4 text-indigo-600" />
-                    <span>ระยะเวลาและวันเริ่มต้น-สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ)</span>
-                  </div>
-                  <span className="text-[11px] text-slate-500 font-medium bg-white px-2 py-0.5 rounded border border-slate-200">
-                    กรอกตัวเลข วัน / เดือน / ปี พ.ศ.
-                  </span>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 font-bold text-slate-800 pb-2 border-b border-slate-200">
+                  <Calendar className="w-4 h-4 text-indigo-600" />
+                  <span>ระยะเวลาและวันเริ่มต้น-สิ้นสุดสัญญา</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* 4. วันที่เริ่มสัญญา (ช่องกรอกตัวเลขปกติ) */}
-                  <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block font-bold text-slate-800 text-xs">
-                        4. วันที่เริ่มสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
-                      </label>
-                      <span className="text-[10px] text-slate-400 font-mono-num">
-                        {formData.startDate}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">วัน (1-31):</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="31"
-                          required
-                          placeholder="เช่น 1"
-                          value={startDay}
-                          onChange={(e) => handleStartDatePartChange(e.target.value, startMonth, startYearBE)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">เดือน (1-12):</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="12"
-                          required
-                          placeholder="เช่น 10"
-                          value={startMonth}
-                          onChange={(e) => handleStartDatePartChange(startDay, e.target.value, startYearBE)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">ปี (พ.ศ.):</span>
-                        <input
-                          type="number"
-                          required
-                          placeholder="เช่น 2569"
-                          value={startYearBE}
-                          onChange={(e) => handleStartDatePartChange(startDay, startMonth, e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="text-[11px] text-slate-600 bg-slate-50 px-2 py-1 rounded border border-slate-100 flex items-center justify-between">
-                      <span>เริ่ม: <strong className="text-slate-900">{formatThaiDate(formData.startDate)}</strong></span>
-                    </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* 4. วันที่เริ่มสัญญา (วว/ดด/ปปปป) - ช่องกรอกตัวเลขปกติ */}
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      4. วันที่เริ่มสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="เช่น 01/10/2569"
+                      value={startDateInput}
+                      onChange={(e) => handleStartDateChange(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-slate-900"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      กรอกตัวเลข วว/ดด/ปปปป (พ.ศ.) เช่น 01/10/2569{' '}
+                      {startDateInput && parseThaiDateToISO(startDateInput) && (
+                        <span className="text-slate-800 font-medium">
+                          ({formatThaiDate(parseThaiDateToISO(startDateInput))})
+                        </span>
+                      )}
+                    </span>
                   </div>
 
-                  {/* 6. วันที่สิ้นสุดสัญญา (ช่องกรอกตัวเลขปกติ) */}
-                  <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block font-bold text-slate-800 text-xs">
+                  {/* 6. วันที่สิ้นสุดสัญญา (วว/ดด/ปปปป) - ช่องกรอกตัวเลขปกติ */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block font-semibold text-slate-700">
                         6. วันที่สิ้นสุดสัญญา (วว/ดด/ปปปป) <span className="text-red-500">*</span>
                       </label>
                       <button
                         type="button"
                         onClick={handleRecalculateEndDate}
-                        className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline flex items-center gap-0.5"
+                        className="text-[11px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline flex items-center gap-0.5"
                         title="คำนวณวันสิ้นสุดใหม่อัตโนมัติจากวันเริ่มและระยะเวลาเช่า"
                       >
                         ↺ คำนวณอัตโนมัติ
                       </button>
                     </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">วัน (1-31):</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="31"
-                          required
-                          placeholder="เช่น 30"
-                          value={endDay}
-                          onChange={(e) => handleEndDatePartChange(e.target.value, endMonth, endYearBE)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">เดือน (1-12):</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="12"
-                          required
-                          placeholder="เช่น 9"
-                          value={endMonth}
-                          onChange={(e) => handleEndDatePartChange(endDay, e.target.value, endYearBE)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">ปี (พ.ศ.):</span>
-                        <input
-                          type="number"
-                          required
-                          placeholder="เช่น 2570"
-                          value={endYearBE}
-                          onChange={(e) => handleEndDatePartChange(endDay, endMonth, e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="text-[11px] text-slate-600 bg-slate-50 px-2 py-1 rounded border border-slate-100 flex items-center justify-between">
-                      <span>สิ้นสุด: <strong className="text-slate-900">{formatThaiDate(formData.endDate)}</strong></span>
-                      <span className="text-[10px] text-slate-400 font-mono-num">({formData.endDate})</span>
-                    </div>
+                    <input
+                      type="text"
+                      required
+                      placeholder="เช่น 30/09/2570"
+                      value={endDateInput}
+                      onChange={(e) => handleEndDateChange(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-slate-900"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      กรอกตัวเลข วว/ดด/ปปปป (พ.ศ.) เช่น 30/09/2570{' '}
+                      {endDateInput && parseThaiDateToISO(endDateInput) && (
+                        <span className="text-slate-800 font-medium">
+                          ({formatThaiDate(parseThaiDateToISO(endDateInput))})
+                        </span>
+                      )}
+                    </span>
                   </div>
                 </div>
 
-                {/* 5. กำหนดระยะเวลาการเช่า (ช่องกรอกตัวเลขปกติ) */}
-                <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                    <label className="block font-bold text-slate-800 text-xs">
-                      5. กำหนดระยะเวลาการเช่า (ช่องกรอกตัวเลขปกติ: ปี / เดือน / วัน)
+                {/* 5. กำหนดระยะเวลาการเช่า - ช่องกรอกตัวเลขปกติ */}
+                <div>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1">
+                    <label className="block font-semibold text-slate-700">
+                      5. กำหนดระยะเวลาการเช่า
                     </label>
                     <span className="text-[11px] text-slate-600">
                       ระยะเวลารวม: <strong className="text-indigo-700">{buildDurationLabel(formData.durationYears, formData.durationMonths, formData.durationDays) || 'ไม่ได้ระบุ'}</strong>
                     </span>
                   </div>
-
                   <div className="grid grid-cols-3 gap-2">
                     <div>
                       <span className="text-[10px] text-slate-500 block mb-0.5 font-medium">จำนวนปี:</span>
                       <input
                         type="number"
                         min="0"
-                        placeholder="0"
+                        placeholder="เช่น 1"
                         value={formData.durationYears}
-                        onChange={(e) => handleDurationPartChange(parseInt(e.target.value, 10) || 0, formData.durationMonths, formData.durationDays)}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        onChange={(e) => handleDurationChange(parseInt(e.target.value, 10) || 0, formData.durationMonths, formData.durationDays)}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
                     <div>
@@ -1365,10 +1311,11 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                       <input
                         type="number"
                         min="0"
-                        placeholder="0"
+                        max="11"
+                        placeholder="เช่น 0"
                         value={formData.durationMonths}
-                        onChange={(e) => handleDurationPartChange(formData.durationYears, parseInt(e.target.value, 10) || 0, formData.durationDays)}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        onChange={(e) => handleDurationChange(formData.durationYears, parseInt(e.target.value, 10) || 0, formData.durationDays)}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
                     <div>
@@ -1376,37 +1323,13 @@ export const MarketManagement: React.FC<MarketManagementProps> = ({ marketType }
                       <input
                         type="number"
                         min="0"
-                        placeholder="0"
+                        max="30"
+                        placeholder="เช่น 0"
                         value={formData.durationDays}
-                        onChange={(e) => handleDurationPartChange(formData.durationYears, formData.durationMonths, parseInt(e.target.value, 10) || 0)}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        onChange={(e) => handleDurationChange(formData.durationYears, formData.durationMonths, parseInt(e.target.value, 10) || 0)}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono-num text-center text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
-                  </div>
-
-                  {/* ปุ่มลัดเลือกด่วนเพิ่มเติม */}
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-slate-100">
-                    <span className="text-[10px] text-slate-400 font-medium">ปุ่มเลือกด่วน:</span>
-                    {[
-                      { y: 0, m: 3, label: '3 เดือน' },
-                      { y: 0, m: 6, label: '6 เดือน' },
-                      { y: 1, m: 0, label: '1 ปี' },
-                      { y: 2, m: 0, label: '2 ปี' },
-                      { y: 3, m: 0, label: '3 ปี' }
-                    ].map((item) => (
-                      <button
-                        key={item.label}
-                        type="button"
-                        onClick={() => handleDurationPartChange(item.y, item.m, 0)}
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium cursor-pointer border transition-colors ${
-                          formData.durationYears === item.y && formData.durationMonths === item.m && formData.durationDays === 0
-                            ? 'bg-slate-900 text-white border-slate-900'
-                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
                   </div>
                 </div>
               </div>
